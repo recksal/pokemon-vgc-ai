@@ -1,0 +1,122 @@
+name: Run matchup simulation
+
+on:
+  workflow_dispatch:
+    inputs:
+      games:
+        description: Number of simulated games
+        required: true
+        default: '100'
+        type: choice
+        options:
+          - '100'
+          - '500'
+          - '1000'
+          - '5000'
+      seed:
+        description: Reproducible random seed
+        required: true
+        default: '20260916'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      VGC_TRACE: '1'
+      VGC_NODE: node
+
+    steps:
+      - name: Check out matchup repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Install pinned Pokémon Showdown
+        run: |
+          mkdir -p "$HOME/code/projects"
+          git clone --filter=blob:none https://github.com/smogon/pokemon-showdown.git "$HOME/code/projects/pokemon-showdown"
+          cd "$HOME/code/projects/pokemon-showdown"
+          git checkout efe494857
+          npm ci
+          npm run build
+
+      - name: Run simulation
+        run: |
+          python offline/analyze_matchup.py \
+            --team-a teams/recksal_mc.packed.txt \
+            --team-b teams/yamazaki_worlds_2026.packed.txt \
+            --games '${{ inputs.games }}' \
+            --seed '${{ inputs.seed }}' \
+            --output runs/matchups/result.json
+
+      - name: Write readable summary
+        if: always() && hashFiles('runs/matchups/result.json') != ''
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          data = json.loads(Path('runs/matchups/result.json').read_text())
+          s = data['summary']
+          low, high = s['a_wilson_95']
+          lines = [
+              '# Pokémon Champions M-C matchup simulation',
+              '',
+              '## Recksal vs. Yamazaki Worlds 2026',
+              '',
+              f"**Games:** {s['games']}",
+              f"**Record:** {s['a_wins']}–{s['b_wins']}–{s['draws']}",
+              f"**Recksal win rate:** {s['a_win_rate']:.1%}",
+              f"**95% Wilson interval:** {low:.1%}–{high:.1%}",
+              f"**Mean game length:** {s['mean_turns']:.2f} turns",
+              f"**Policy fallbacks:** Recksal {s['fallbacks']['team-a']}, Yamazaki {s['fallbacks']['team-b']}",
+              '',
+              '### Recksal leads',
+              '',
+              '| Lead | Games | Wins | Win rate |',
+              '|---|---:|---:|---:|',
+          ]
+          for row in s['a_leads'][:12]:
+              lines.append(f"| {row['key']} | {row['games']} | {row['wins']} | {row['win_rate']:.1%} |")
+          lines += [
+              '',
+              '### Yamazaki leads — Recksal win rate',
+              '',
+              '| Opposing lead | Games | Recksal wins | Recksal win rate |',
+              '|---|---:|---:|---:|',
+          ]
+          for row in s['b_leads_from_a_perspective'][:12]:
+              lines.append(f"| {row['key']} | {row['games']} | {row['wins']} | {row['win_rate']:.1%} |")
+          lines += [
+              '',
+              '> This is a simulation of the repository’s current VGC policy, not an objective true matchup probability. Inspect fallbacks and lead choices before using the aggregate win rate for team decisions.',
+          ]
+          Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Upload full simulation report
+        if: always() && hashFiles('runs/matchups/result.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: matchup-${{ inputs.games }}-seed-${{ inputs.seed }}
+          path: runs/matchups/result.json
+          retention-days: 30
