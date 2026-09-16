@@ -1,0 +1,109 @@
+name: Run opening-line probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      games_per_line:
+        description: Simulations per forced turn-1 line
+        required: true
+        default: '50'
+        type: choice
+        options:
+          - '20'
+          - '50'
+          - '100'
+      seed:
+        description: Reproducible random seed
+        required: true
+        default: '20260916'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      VGC_TRACE: '1'
+      VGC_NODE: node
+
+    steps:
+      - name: Check out matchup repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Install pinned Pokémon Showdown
+        run: |
+          mkdir -p "$HOME/code/projects"
+          git clone --filter=blob:none https://github.com/smogon/pokemon-showdown.git "$HOME/code/projects/pokemon-showdown"
+          cd "$HOME/code/projects/pokemon-showdown"
+          git checkout efe494857
+          npm ci
+          npm run build
+
+      - name: Run opening-line probe
+        run: |
+          python offline/probe_opening_lines.py \
+            --team-a teams/recksal_mc.packed.txt \
+            --team-b teams/yamazaki_worlds_2026.packed.txt \
+            --games-per-line '${{ inputs.games_per_line }}' \
+            --seed '${{ inputs.seed }}' \
+            --output runs/matchups/opening-probe.json
+
+      - name: Write readable summary
+        if: always() && hashFiles('runs/matchups/opening-probe.json') != ''
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          data = json.loads(Path('runs/matchups/opening-probe.json').read_text())
+          lines = [
+              '# Opening-line probe',
+              '',
+              f"**Our preview:** {data['a_plan']['name']}",
+              f"**Opponent preview:** {data['b_plan']['name']}",
+              f"**Games per line:** {data['games_per_line']}",
+              '',
+              '| Turn-1 line | Record | Win rate | 95% CI | Mean turns | Fallbacks |',
+              '|---|---:|---:|---:|---:|---:|',
+          ]
+          for row in data['lines']:
+              s = row['summary']
+              lo, hi = s['a_wilson_95']
+              fb = s['fallbacks']['team-a'] + s['fallbacks']['team-b']
+              lines.append(
+                  f"| {row['line']['name']} | {s['a_wins']}–{s['b_wins']}–{s['draws']} | "
+                  f"{s['a_win_rate']:.1%} | {lo:.1%}–{hi:.1%} | {s['mean_turns']:.2f} | {fb} |"
+              )
+          lines += [
+              '',
+              '> Preview plans and the first Team A battle choice are controlled as labeled. After turn 1, both sides return to the normal VGC policy. Every line uses the same Showdown seed stream and alternating seats.',
+          ]
+          Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Upload full opening-probe report
+        if: always() && hashFiles('runs/matchups/opening-probe.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: opening-probe-${{ inputs.games_per_line }}-seed-${{ inputs.seed }}
+          path: runs/matchups/opening-probe.json
+          retention-days: 30
