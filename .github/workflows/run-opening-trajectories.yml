@@ -38,15 +38,25 @@ on:
         options:
           - '3'
           - '5'
-      top_k:
-        description: Sample among this many top-scored legal joint orders
+      score_gap:
+        description: Include legal joint orders within this many score points of best
         required: true
-        default: '5'
+        default: '100'
         type: choice
         options:
-          - '3'
-          - '5'
-          - '8'
+          - '60'
+          - '80'
+          - '100'
+          - '120'
+      max_candidates:
+        description: Safety cap on eligible scored joint orders per decision
+        required: true
+        default: '20'
+        type: choice
+        options:
+          - '12'
+          - '20'
+          - '30'
       temperature:
         description: Exploration temperature in evaluator score units
         required: true
@@ -111,7 +121,8 @@ jobs:
             --trajectories '${{ inputs.trajectories }}' \
             --repeats '${{ inputs.repeats }}' \
             --diversify-turns '${{ inputs.diversify_turns }}' \
-            --top-k '${{ inputs.top_k }}' \
+            --score-gap '${{ inputs.score_gap }}' \
+            --max-candidates '${{ inputs.max_candidates }}' \
             --temperature '${{ inputs.temperature }}' \
             --seed '${{ inputs.seed }}' \
             --output runs/matchups/opening-trajectories.json
@@ -133,7 +144,7 @@ jobs:
               f"**Preview:** {data['a_plan']['name']} vs {data['b_plan']['name']}",
               f"**Breadth:** {data['trajectories']} policy trajectories × {data['repeats']} simulator repeats = {s['games']} battles",
               f"**Diversified turns:** 1–{data['diversify_turns']}",
-              f"**Action neighborhood:** top {data['top_k']} scored legal joint orders, temperature {data['temperature']}",
+              f"**Action neighborhood:** every scored legal joint order within {data['score_gap']} points of the best, capped at {data['max_candidates']}, temperature {data['temperature']}",
               f"**Unique opening signatures observed:** {data['unique_opening_signatures']}",
               f"**Team A result:** {s['a_wins']}–{s['b_wins']}–{s['draws']} ({s['a_win_rate']:.1%}, 95% CI {lo:.1%}–{hi:.1%})",
               f"**Fallbacks:** Team A {s['fallbacks']['team-a']}, Team B {s['fallbacks']['team-b']}",
@@ -169,7 +180,7 @@ jobs:
               )
           lines += [
               '',
-              '> Each trajectory fixes the policy-sampling seeds for both sides and is replayed with several independent Showdown RNG seeds. During the opening horizon, each side samples from its current top-scored legal joint orders; after the horizon, normal VGC policy resumes. This is breadth-first matchup exploration, not a literal ladder win-rate estimate.',
+              '> Each trajectory fixes the policy-sampling seeds for both sides and is replayed with several independent Showdown RNG seeds. During the opening horizon, each side samples from every scored legal joint order inside the configured score gap, subject only to the safety cap; after the horizon, normal VGC policy resumes. This is breadth-first matchup exploration, not a literal ladder win-rate estimate.',
           ]
           Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('\n'.join(lines) + '\n')
           PY
