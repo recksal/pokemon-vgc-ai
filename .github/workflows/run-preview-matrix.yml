@@ -20,6 +20,7 @@ on:
           - '10'
           - '20'
           - '50'
+          - '100'
       seed:
         description: Reproducible random seed
         required: true
