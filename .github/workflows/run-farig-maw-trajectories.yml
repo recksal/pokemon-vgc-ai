@@ -1,0 +1,175 @@
+name: Run Farig Mawile trajectory explorer
+
+on:
+  workflow_dispatch:
+    inputs:
+      trajectories:
+        description: Different early-game policy trajectories
+        required: true
+        default: '200'
+        type: choice
+        options:
+          - '50'
+          - '100'
+          - '200'
+      repeats:
+        description: Showdown RNG repeats per trajectory
+        required: true
+        default: '5'
+        type: choice
+        options:
+          - '3'
+          - '5'
+      diversify_turns:
+        description: Number of opening turns to diversify
+        required: true
+        default: '5'
+        type: choice
+        options:
+          - '3'
+          - '5'
+      score_gap:
+        description: Include every legal joint order within this many evaluator points of best
+        required: true
+        default: '100'
+        type: choice
+        options:
+          - '60'
+          - '80'
+          - '100'
+          - '125'
+      max_candidates:
+        description: Safety cap on plausible legal joint orders per decision
+        required: true
+        default: '20'
+        type: choice
+        options:
+          - '12'
+          - '20'
+          - '30'
+      temperature:
+        description: Exploration temperature in evaluator score units
+        required: true
+        default: '35'
+        type: choice
+        options:
+          - '20'
+          - '35'
+          - '50'
+      seed:
+        description: Reproducible master seed
+        required: true
+        default: '20260916'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      VGC_TRACE: '1'
+      VGC_NODE: node
+
+    steps:
+      - name: Check out matchup repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Install pinned Pokémon Showdown
+        run: |
+          mkdir -p "$HOME/code/projects"
+          git clone --filter=blob:none https://github.com/smogon/pokemon-showdown.git "$HOME/code/projects/pokemon-showdown"
+          cd "$HOME/code/projects/pokemon-showdown"
+          git checkout efe494857
+          npm ci
+          npm run build
+
+      - name: Explore Farigiraf Mawile trajectories
+        run: |
+          python offline/explore_farig_maw_vs_sneas_chomp.py \
+            --team-a teams/recksal_mc.packed.txt \
+            --team-b teams/yamazaki_worlds_2026.packed.txt \
+            --cell farig-maw-vs-sneas-chomp \
+            --trajectories '${{ inputs.trajectories }}' \
+            --repeats '${{ inputs.repeats }}' \
+            --diversify-turns '${{ inputs.diversify_turns }}' \
+            --score-gap '${{ inputs.score_gap }}' \
+            --max-candidates '${{ inputs.max_candidates }}' \
+            --temperature '${{ inputs.temperature }}' \
+            --seed '${{ inputs.seed }}' \
+            --output runs/matchups/farig-maw-vs-sneas-chomp.json
+
+      - name: Write readable summary
+        if: always() && hashFiles('runs/matchups/farig-maw-vs-sneas-chomp.json') != ''
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          data = json.loads(Path('runs/matchups/farig-maw-vs-sneas-chomp.json').read_text())
+          s = data['overall']
+          lo, hi = s['a_wilson_95']
+          lines = [
+              '# Farigiraf + Mawile vs Sneasler + Garchomp',
+              '',
+              f"**Our preview:** {data['a_plan']['name']}",
+              f"**Opponent preview:** {data['b_plan']['name']}",
+              f"**Breadth:** {data['trajectories']} trajectories × {data['repeats']} repeats = {s['games']} battles",
+              f"**Diversified turns:** 1–{data['diversify_turns']}",
+              f"**Plausibility:** all legal joint orders scored; gap ≤ {data['score_gap']}; cap {data['max_candidates']}; temperature {data['temperature']}",
+              f"**Unique opening signatures:** {data['unique_opening_signatures']}",
+              f"**Team A result:** {s['a_wins']}–{s['b_wins']}–{s['draws']} ({s['a_win_rate']:.1%}, 95% CI {lo:.1%}–{hi:.1%})",
+              f"**Fallbacks:** Team A {s['fallbacks']['team-a']}, Team B {s['fallbacks']['team-b']}",
+              '',
+              '## Team A turn-1 choices',
+              '',
+              '| Choice | Games |',
+              '|---|---:|',
+          ]
+          for choice, count in data['a_first_turn_frequencies'][:15]:
+              lines.append(f"| {choice} | {count} |")
+          lines += ['', '## Team B turn-1 choices', '', '| Choice | Games |', '|---|---:|']
+          for choice, count in data['b_first_turn_frequencies'][:15]:
+              lines.append(f"| {choice} | {count} |")
+
+          ranked = sorted(data['trajectory_summaries'], key=lambda r: (-r['summary']['a_win_rate'], r['trajectory_id']))
+          lines += [
+              '',
+              '## Highest-converting sampled trajectories',
+              '',
+              '| Trajectory | Record | Win rate | Team A opening | Team B opening |',
+              '|---:|---:|---:|---|---|',
+          ]
+          for row in ranked[:15]:
+              rs = row['summary']
+              a_open = ' → '.join(step['choice'] for step in row['representative_a_opening']) or '—'
+              b_open = ' → '.join(step['choice'] for step in row['representative_b_opening']) or '—'
+              lines.append(f"| {row['trajectory_id']} | {rs['a_wins']}–{rs['b_wins']}–{rs['draws']} | {rs['a_win_rate']:.1%} | {a_open} | {b_open} |")
+          Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Upload trajectory report
+        if: always() && hashFiles('runs/matchups/farig-maw-vs-sneas-chomp.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: farig-maw-vs-sneas-chomp-${{ inputs.trajectories }}x${{ inputs.repeats }}-seed-${{ inputs.seed }}
+          path: runs/matchups/farig-maw-vs-sneas-chomp.json
+          retention-days: 30
