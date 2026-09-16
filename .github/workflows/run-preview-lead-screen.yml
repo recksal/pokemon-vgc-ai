@@ -1,0 +1,153 @@
+name: Run preview lead screen
+
+on:
+  workflow_dispatch:
+    inputs:
+      opponent_opening:
+        description: Fixed opponent lead/back four
+        required: true
+        default: sneas-chomp
+        type: choice
+        options:
+          - sneas-chomp
+          - chomp-dnite
+      screen_games:
+        description: Small screening sample per generated Team A plan
+        required: true
+        default: '2'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '5'
+      confirm_top:
+        description: Number of strongest screened plans to retest
+        required: true
+        default: '12'
+        type: choice
+        options:
+          - '8'
+          - '12'
+          - '16'
+          - '24'
+      confirm_games:
+        description: Held-out games per finalist
+        required: true
+        default: '20'
+        type: choice
+        options:
+          - '10'
+          - '20'
+          - '50'
+      seed:
+        description: Reproducible master seed
+        required: true
+        default: '20260916'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      VGC_TRACE: '1'
+      VGC_NODE: node
+
+    steps:
+      - name: Check out matchup repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Install pinned Pokémon Showdown
+        run: |
+          mkdir -p "$HOME/code/projects"
+          git clone --filter=blob:none https://github.com/smogon/pokemon-showdown.git "$HOME/code/projects/pokemon-showdown"
+          cd "$HOME/code/projects/pokemon-showdown"
+          git checkout efe494857
+          npm ci
+          npm run build
+
+      - name: Screen preview leads
+        run: |
+          python offline/screen_preview_leads.py \
+            --team-a teams/recksal_mc.packed.txt \
+            --team-b teams/yamazaki_worlds_2026.packed.txt \
+            --opponent-opening '${{ inputs.opponent_opening }}' \
+            --screen-games '${{ inputs.screen_games }}' \
+            --confirm-top '${{ inputs.confirm_top }}' \
+            --confirm-games '${{ inputs.confirm_games }}' \
+            --seed '${{ inputs.seed }}' \
+            --output runs/matchups/preview-lead-screen.json
+
+      - name: Write readable summary
+        if: always() && hashFiles('runs/matchups/preview-lead-screen.json') != ''
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          data = json.loads(Path('runs/matchups/preview-lead-screen.json').read_text())
+          lines = [
+              '# Preview lead screen',
+              '',
+              f"**Opponent:** {data['opponent_plan']['name']}",
+              f"**Generated Team A plans:** {data['generated_plan_count']}",
+              f"**Screen:** {data['screen_games_per_plan']} games per plan",
+              f"**Held-out confirmation:** top {data['confirm_top']} × {data['confirm_games_per_plan']} games",
+              f"**Seed:** {data['seed']}",
+              '',
+              '> Screening and confirmation use different Showdown seed streams. The confirmation table is the one to use for conclusions.',
+              '',
+              '## Held-out confirmation',
+              '',
+              '| Rank | Team A plan | Record | Win rate | 95% CI | Mean turns |',
+              '|---:|---|---:|---:|---:|---:|',
+          ]
+          for i, row in enumerate(data['confirmation'], 1):
+              s = row['summary']
+              lo, hi = s['a_wilson_95']
+              lines.append(
+                  f"| {i} | {row['plan']['name']} | {s['a_wins']}–{s['b_wins']}–{s['draws']} | {s['a_win_rate']:.1%} | {lo:.1%}–{hi:.1%} | {s['mean_turns']:.2f} |"
+              )
+
+          lines += [
+              '',
+              '## Screen leaders',
+              '',
+              '| Rank | Team A plan | Screen record | Win rate |',
+              '|---:|---|---:|---:|',
+          ]
+          for i, row in enumerate(data['screen'][:24], 1):
+              s = row['summary']
+              lines.append(
+                  f"| {i} | {row['plan']['name']} | {s['a_wins']}–{s['b_wins']}–{s['draws']} | {s['a_win_rate']:.1%} |"
+              )
+          Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Upload preview lead report
+        if: always() && hashFiles('runs/matchups/preview-lead-screen.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-lead-screen-${{ inputs.opponent_opening }}-seed-${{ inputs.seed }}
+          path: runs/matchups/preview-lead-screen.json
+          retention-days: 30
