@@ -1,0 +1,150 @@
+name: Run preview matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: Preview-plan matrix size
+        required: true
+        default: quick
+        type: choice
+        options:
+          - quick
+          - full
+      games_per_cell:
+        description: Simulations for every preview-plan pairing
+        required: true
+        default: '20'
+        type: choice
+        options:
+          - '10'
+          - '20'
+          - '50'
+      seed:
+        description: Reproducible random seed
+        required: true
+        default: '20260916'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      VGC_TRACE: '1'
+      VGC_NODE: node
+
+    steps:
+      - name: Check out matchup repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Install pinned Pokémon Showdown
+        run: |
+          mkdir -p "$HOME/code/projects"
+          git clone --filter=blob:none https://github.com/smogon/pokemon-showdown.git "$HOME/code/projects/pokemon-showdown"
+          cd "$HOME/code/projects/pokemon-showdown"
+          git checkout efe494857
+          npm ci
+          npm run build
+
+      - name: Run preview matrix
+        run: |
+          python offline/analyze_preview_matrix.py \
+            --team-a teams/recksal_mc.packed.txt \
+            --team-b teams/yamazaki_worlds_2026.packed.txt \
+            --preset '${{ inputs.preset }}' \
+            --games-per-cell '${{ inputs.games_per_cell }}' \
+            --seed '${{ inputs.seed }}' \
+            --output runs/matchups/preview-matrix.json
+
+      - name: Write readable summary
+        if: always() && hashFiles('runs/matchups/preview-matrix.json') != ''
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          data = json.loads(Path('runs/matchups/preview-matrix.json').read_text())
+          overall = data['overall']
+          lines = [
+              '# Pokémon Champions M-C preview matrix',
+              '',
+              f"**Preset:** {data['preset']}",
+              f"**Cells:** {len(data['cells'])}",
+              f"**Games per cell:** {data['games_per_cell']}",
+              f"**Total battles:** {overall['games']}",
+              f"**Policy fallbacks:** Recksal {overall['fallbacks']['team-a']}, Yamazaki {overall['fallbacks']['team-b']}",
+              '',
+              '## Recksal preview plans',
+              '',
+              '| Plan | Games | Wins | Win rate | 95% CI |',
+              '|---|---:|---:|---:|---:|',
+          ]
+          for row in data['by_a_plan']:
+              low, high = row['a_wilson_95']
+              lines.append(
+                  f"| {row['name']} | {row['games']} | {row['a_wins']} | {row['a_win_rate']:.1%} | {low:.1%}–{high:.1%} |"
+              )
+
+          ranked = sorted(
+              data['cells'],
+              key=lambda c: (-c['summary']['a_win_rate'], c['a_plan']['name'], c['b_plan']['name']),
+          )
+          lines += [
+              '',
+              '## Best individual preview pairings',
+              '',
+              '| Recksal plan | Yamazaki plan | Record | Win rate |',
+              '|---|---|---:|---:|',
+          ]
+          for cell in ranked[:12]:
+              s = cell['summary']
+              lines.append(
+                  f"| {cell['a_plan']['name']} | {cell['b_plan']['name']} | {s['a_wins']}–{s['b_wins']}–{s['draws']} | {s['a_win_rate']:.1%} |"
+              )
+
+          lines += [
+              '',
+              '## Opponent plans — Recksal results',
+              '',
+              '| Yamazaki plan | Games | Recksal wins | Recksal win rate |',
+              '|---|---:|---:|---:|',
+          ]
+          for row in data['by_b_plan']:
+              lines.append(
+                  f"| {row['name']} | {row['games']} | {row['a_wins']} | {row['a_win_rate']:.1%} |"
+              )
+
+          lines += [
+              '',
+              '> Every cell reuses the same simulator seed stream and alternates seats. Preview orders are forced, while the normal in-battle VGC policy and exact Showdown engine remain active. Treat this as a matchup diagnostic, not a literal true-win-probability estimate.',
+          ]
+          Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Upload full matrix report
+        if: always() && hashFiles('runs/matchups/preview-matrix.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-matrix-${{ inputs.preset }}-${{ inputs.games_per_cell }}-seed-${{ inputs.seed }}
+          path: runs/matchups/preview-matrix.json
+          retention-days: 30
