@@ -1,10 +1,12 @@
 """Explore many plausible early-game trajectories instead of repeating one line.
 
-For a fixed forced-preview matchup cell, each side samples among its top-scored legal
-joint orders for the first N turns. A trajectory seed fixes that policy sampling; each
-trajectory is then replayed several times with different Showdown simulator seeds. This
-spends an evaluation budget on breadth first (many different plausible openings) and
-uses a small number of repeats to measure RNG sensitivity inside each opening family.
+For a fixed forced-preview matchup cell, each side samples among plausible scored legal
+joint orders for the first N turns. Plausibility is defined by evaluator score distance
+from the current best action, not by a fixed top-k rank. A trajectory seed fixes that
+policy sampling; each trajectory is then replayed several times with different Showdown
+simulator seeds. This spends an evaluation budget on breadth first (many different
+plausible openings) and uses a small number of repeats to measure RNG sensitivity inside
+each opening family.
 
 After the diversification horizon, both sides return to the normal VGC policy.
 """
@@ -56,13 +58,15 @@ class DiverseOpeningAgent(ForcedPreviewAgent):
         *,
         policy_seed: int,
         diversify_turns: int,
-        top_k: int,
+        score_gap: float,
+        max_candidates: int,
         temperature: float,
     ) -> None:
         super().__init__(base, plan)
         self._rng = random.Random(policy_seed)
         self.diversify_turns = diversify_turns
-        self.top_k = top_k
+        self.score_gap = score_gap
+        self.max_candidates = max_candidates
         self.temperature = temperature
         self.sampled_history: list[dict[str, Any]] = []
 
@@ -73,10 +77,15 @@ class DiverseOpeningAgent(ForcedPreviewAgent):
         if not scored:
             return None
 
-        pool = scored[: max(1, min(self.top_k, len(scored)))]
-        best = float(pool[0].score)
+        best = float(scored[0].score)
+        cutoff = best - self.score_gap
+        plausible = [row for row in scored if float(row.score) >= cutoff]
+        pool = plausible[: max(1, min(self.max_candidates, len(plausible)))]
+        if not pool:
+            pool = [scored[0]]
+
         # Temperature is in evaluator score units. A low temperature hugs the policy
-        # argmax; a higher one explores more of the plausible top-scored neighborhood.
+        # argmax; a higher one explores more of the plausible score-gap neighborhood.
         if self.temperature <= 0:
             chosen_index = 0
         else:
@@ -92,9 +101,18 @@ class DiverseOpeningAgent(ForcedPreviewAgent):
                 "choice": label,
                 "score": round(float(chosen.score), 3),
                 "best_score": round(best, 3),
+                "score_gap_from_best": round(best - float(chosen.score), 3),
+                "score_cutoff": round(cutoff, 3),
+                "eligible_before_cap": len(plausible),
                 "candidate_count": len(pool),
+                "candidate_cap": self.max_candidates,
                 "candidates": [
-                    {"rank": i + 1, "choice": describe_order(row.order), "score": round(float(row.score), 3)}
+                    {
+                        "rank": i + 1,
+                        "choice": describe_order(row.order),
+                        "score": round(float(row.score), 3),
+                        "gap": round(best - float(row.score), 3),
+                    }
                     for i, row in enumerate(pool)
                 ],
             }
@@ -126,7 +144,8 @@ def _make_diverse(
     *,
     policy_seed: int,
     diversify_turns: int,
-    top_k: int,
+    score_gap: float,
+    max_candidates: int,
     temperature: float,
 ) -> DiverseOpeningAgent:
     base = _make_forced(team, battle_format, plan, name)
@@ -135,7 +154,8 @@ def _make_diverse(
         plan,
         policy_seed=policy_seed,
         diversify_turns=diversify_turns,
-        top_k=top_k,
+        score_gap=score_gap,
+        max_candidates=max_candidates,
         temperature=temperature,
     )
     agent.name = name
@@ -170,7 +190,8 @@ def run_explorer(
     trajectories: int,
     repeats: int,
     diversify_turns: int,
-    top_k: int,
+    score_gap: float,
+    max_candidates: int,
     temperature: float,
     seed: int,
     battle_format: str,
@@ -207,7 +228,8 @@ def run_explorer(
                     "team-a",
                     policy_seed=spec["policy_seed_a"],
                     diversify_turns=diversify_turns,
-                    top_k=top_k,
+                    score_gap=score_gap,
+                    max_candidates=max_candidates,
                     temperature=temperature,
                 )
                 b_agent = _make_diverse(
@@ -217,7 +239,8 @@ def run_explorer(
                     "team-b",
                     policy_seed=spec["policy_seed_b"],
                     diversify_turns=diversify_turns,
-                    top_k=top_k,
+                    score_gap=score_gap,
+                    max_candidates=max_candidates,
                     temperature=temperature,
                 )
                 outcome = play_battle(
@@ -266,12 +289,8 @@ def run_explorer(
         )
 
     # Surface which early choices occur often and whether breadth actually materialized.
-    a_first = Counter(
-        r["a_opening"][0]["choice"] for r in records if r["a_opening"]
-    )
-    b_first = Counter(
-        r["b_opening"][0]["choice"] for r in records if r["b_opening"]
-    )
+    a_first = Counter(r["a_opening"][0]["choice"] for r in records if r["a_opening"])
+    b_first = Counter(r["b_opening"][0]["choice"] for r in records if r["b_opening"])
     unique_signatures = {
         (
             tuple(step["choice"] for step in r["a_opening"]),
@@ -287,7 +306,8 @@ def run_explorer(
         "trajectories": trajectories,
         "repeats": repeats,
         "diversify_turns": diversify_turns,
-        "top_k": top_k,
+        "score_gap": score_gap,
+        "max_candidates": max_candidates,
         "temperature": temperature,
         "timestamp": datetime.now(UTC).isoformat(),
         "a_plan": asdict(a_plan),
@@ -309,7 +329,8 @@ def print_report(result: dict[str, Any]) -> None:
     )
     print(
         f"Cell: {result['cell']} | diversify turns 1-{result['diversify_turns']} | "
-        f"top-k {result['top_k']} | temperature {result['temperature']}"
+        f"score gap {result['score_gap']} | cap {result['max_candidates']} | "
+        f"temperature {result['temperature']}"
     )
     print(
         f"Team A: {s['a_wins']}/{s['games']} ({s['a_win_rate']:.1%}); "
@@ -331,14 +352,23 @@ def main() -> int:
     parser.add_argument("--trajectories", type=int, default=200)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--diversify-turns", type=int, default=5)
-    parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--score-gap", type=float, default=100.0)
+    parser.add_argument("--max-candidates", type=int, default=20)
     parser.add_argument("--temperature", type=float, default=35.0)
     parser.add_argument("--seed", type=int, default=20260916)
     parser.add_argument("--format", default=FORMAT_ID)
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
-    if args.trajectories <= 0 or args.repeats <= 0 or args.diversify_turns <= 0 or args.top_k <= 0:
-        raise SystemExit("trajectory, repeat, turn, and top-k counts must all be > 0")
+    if (
+        args.trajectories <= 0
+        or args.repeats <= 0
+        or args.diversify_turns <= 0
+        or args.max_candidates <= 0
+        or args.score_gap < 0
+    ):
+        raise SystemExit(
+            "trajectory, repeat, turn, and candidate counts must be > 0; score gap must be >= 0"
+        )
 
     result = run_explorer(
         args.team_a.read_text().strip(),
@@ -347,7 +377,8 @@ def main() -> int:
         trajectories=args.trajectories,
         repeats=args.repeats,
         diversify_turns=args.diversify_turns,
-        top_k=args.top_k,
+        score_gap=args.score_gap,
+        max_candidates=args.max_candidates,
         temperature=args.temperature,
         seed=args.seed,
         battle_format=args.format,
