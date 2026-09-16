@@ -1,14 +1,16 @@
 """Explore many plausible early-game trajectories instead of repeating one line.
 
 For a fixed forced-preview matchup cell, each side samples among plausible scored legal
-joint orders for the first N turns. Plausibility is defined by evaluator score distance
-from the current best action, not by a fixed top-k rank. A trajectory seed fixes that
-policy sampling; each trajectory is then replayed several times with different Showdown
-simulator seeds. This spends an evaluation budget on breadth first (many different
-plausible openings) and uses a small number of repeats to measure RNG sensitivity inside
-each opening family.
+joint orders for the first N turns. During the diversified horizon, EVERY legal joint
+order is first scored by the project's heuristic evaluator; plausibility is then defined
+by score distance from the current best action, not by the two-ply search shortlist or a
+fixed top-k rank. A trajectory seed fixes that policy sampling; each trajectory is then
+replayed several times with different Showdown simulator seeds. This spends an evaluation
+budget on breadth first (many different plausible openings) and uses a small number of
+repeats to measure RNG sensitivity inside each opening family.
 
-After the diversification horizon, both sides return to the normal VGC policy.
+After the diversification horizon, both sides return to the normal VGC policy (including
+the usual two-ply search when enabled).
 """
 
 from __future__ import annotations
@@ -34,10 +36,10 @@ from offline.analyze_preview_matrix import A_QUICK, B_QUICK, ForcedPlan, ForcedP
 from vgc.actions import describe_order  # noqa: E402
 from vgc.config import FORMAT_ID, RUNS_DIR  # noqa: E402
 from vgc.evaluation import wilson_interval  # noqa: E402
+from vgc.evaluator import score_joint_orders  # noqa: E402
 from vgc.own_team import apply_own_spreads  # noqa: E402
 from vgc.rl.env import SimWorker, choice_string  # noqa: E402
 from vgc.rl.match import play_battle  # noqa: E402
-from vgc.search import search_joint_orders  # noqa: E402
 
 
 CELLS: dict[str, tuple[int, int]] = {
@@ -73,7 +75,16 @@ class DiverseOpeningAgent(ForcedPreviewAgent):
     def _sample_scored(self, battle: DoubleBattle):
         config = self.player.config
         memory = self.player._memory_for(battle)
-        scored = search_joint_orders(battle, config)
+
+        # IMPORTANT: use the full heuristic evaluator here, not search_joint_orders().
+        # The normal two-ply search intentionally prunes our legal orders to
+        # config.search_our_candidates before its expensive response search. That is
+        # desirable for ladder play but wrong for a breadth-first matchup explorer: a
+        # strategically interesting order (e.g. Protect + targeted Close Combat) can be
+        # legal and reasonable yet never reach the search shortlist. score_joint_orders
+        # returns the complete legal joint-order ranking, so every legal order receives
+        # a score before the score-gap filter is applied.
+        scored = score_joint_orders(battle, config)
         if not scored:
             return None
 
@@ -84,7 +95,7 @@ class DiverseOpeningAgent(ForcedPreviewAgent):
         if not pool:
             pool = [scored[0]]
 
-        # Temperature is in evaluator score units. A low temperature hugs the policy
+        # Temperature is in evaluator score units. A low temperature hugs the evaluator
         # argmax; a higher one explores more of the plausible score-gap neighborhood.
         if self.temperature <= 0:
             chosen_index = 0
@@ -103,6 +114,7 @@ class DiverseOpeningAgent(ForcedPreviewAgent):
                 "best_score": round(best, 3),
                 "score_gap_from_best": round(best - float(chosen.score), 3),
                 "score_cutoff": round(cutoff, 3),
+                "all_legal_scored": len(scored),
                 "eligible_before_cap": len(plausible),
                 "candidate_count": len(pool),
                 "candidate_cap": self.max_candidates,
@@ -306,6 +318,7 @@ def run_explorer(
         "trajectories": trajectories,
         "repeats": repeats,
         "diversify_turns": diversify_turns,
+        "scoring_mode": "all_legal_myopic",
         "score_gap": score_gap,
         "max_candidates": max_candidates,
         "temperature": temperature,
@@ -329,8 +342,8 @@ def print_report(result: dict[str, Any]) -> None:
     )
     print(
         f"Cell: {result['cell']} | diversify turns 1-{result['diversify_turns']} | "
-        f"score gap {result['score_gap']} | cap {result['max_candidates']} | "
-        f"temperature {result['temperature']}"
+        f"all legal orders scored | score gap {result['score_gap']} | "
+        f"cap {result['max_candidates']} | temperature {result['temperature']}"
     )
     print(
         f"Team A: {s['a_wins']}/{s['games']} ({s['a_win_rate']:.1%}); "
