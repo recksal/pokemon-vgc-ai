@@ -98,8 +98,6 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    env:
-      VGC_SHOWDOWN_REPO: ${{ runner.temp }}/pokemon-showdown
 
     steps:
       - name: Check out repository
@@ -114,6 +112,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22.18.0'
+
+      - name: Configure portable Showdown path
+        run: echo "VGC_SHOWDOWN_REPO=$RUNNER_TEMP/pokemon-showdown" >> "$GITHUB_ENV"
 
       - name: Run Codespaces bootstrap
         run: bash .devcontainer/setup.sh
