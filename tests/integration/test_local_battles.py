@@ -21,6 +21,7 @@ from poke_env.battle.double_battle import DoubleBattle
 from poke_env.battle.move import Move
 from poke_env.battle.pokemon import Pokemon
 from poke_env.player.battle_order import ForfeitBattleOrder, SingleBattleOrder
+from poke_env.ps_client.server_configuration import LocalhostServerConfiguration
 
 from vgc.actions import (
     choice_wire_message,
