@@ -5,13 +5,19 @@ offline/run_matches.py, tests) should import these instead of hardcoding paths/i
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Local Pokemon Showdown checkout this project drives (server + validator + data source).
-# Not part of this repo -- cloned/built separately. See CLAUDE.md for setup.
-SHOWDOWN_REPO = Path("/Users/edmundyu/code/projects/pokemon-showdown")
+# Home development keeps the historical macOS default, while Codespaces/other remote
+# environments set VGC_SHOWDOWN_REPO. Do not require the path to exist at import time:
+# several report-only tools only need the checked-in Champions export.
+_DEFAULT_SHOWDOWN_REPO = Path("/Users/edmundyu/code/projects/pokemon-showdown")
+SHOWDOWN_REPO = Path(
+    os.environ.get("VGC_SHOWDOWN_REPO", str(_DEFAULT_SHOWDOWN_REPO))
+).expanduser()
 
 # "[Gen 9 Champions] VGC 2026 Reg M-C" -- doubles, bring-6-pick-4, level 50, Megas allowed.
 # The format offers mutual-consent Open Team Sheets, but the bot rejects them and assumes
@@ -20,7 +26,7 @@ SHOWDOWN_REPO = Path("/Users/edmundyu/code/projects/pokemon-showdown")
 # abilities, and learnsets all diverge from vanilla gen9 VGC. Never assume vanilla data.
 FORMAT_ID = "gen9championsvgc2026regmc"
 
-# Local Showdown server poke-env connects to (`node pokemon-showdown start --no-security`).
+# Local Showdown server poke-env connects to (node pokemon-showdown start --no-security).
 LOCAL_SERVER_HOST = "localhost:8000"
 LOCAL_SERVER_WS_URL = f"ws://{LOCAL_SERVER_HOST}/showdown/websocket"
 
