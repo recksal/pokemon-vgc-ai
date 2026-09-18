@@ -60,13 +60,41 @@ misgraded as unavailable legal moves.
 The first form prints a readable turn-by-turn report; --json emits
 vgc-game-analysis-v1 for later UI/report tooling.
 
+## Real-game test path
+
+The branch is designed to reach a trustworthy first human test without grading a
+spectator replay as if it contained private legal-choice requests.
+
+Use the existing Showdown credentials contract and your packed M-C team:
+
+    .venv/bin/python offline/play_and_analyze.py --team teams/recksal_mc.packed.txt
+
+The command joins exactly one public Reg M-C ladder game. You, not the bot policy,
+choose the four team-preview slots and every legal joint action from a numbered list.
+The inherited VgcPlayer request wrapper records the private player-view protocol at
+each decision.
+
+After the battle the command first runs decision-replay verification. If reconstruction
+does not exactly match the captured decision inputs, it refuses to grade the game.
+On success it writes under runs/game-analyzer-real/:
+
+- the exact decision-replay JSON bundle;
+- a machine-readable analysis JSON file;
+- a readable analysis TXT report;
+- the normal saved Showdown replay under the replays subdirectory.
+
+This is the preferred first real-game test. A public spectator replay alone remains a
+weaker input because it does not contain the complete private request/legal-action
+stream.
+
 ## Verification
 
-The integration suite now creates an authentic player-view bundle from a deterministic
-local Showdown M-C battle, runs that bundle through the analyzer, and requires every
-graded played action to match a reconstructed legal candidate. This verifies the
-record -> cutoff replay -> legal action -> search -> report path without committing a
-fabricated "real user" replay.
+The integration suite now covers two authentic local Showdown paths: a deterministic
+scripted M-C bundle and the same HumanCapturePlayer interaction path used by the
+real-game CLI. The human-path test selects preview slots, submits a real legal move,
+then forfeits; the captured bundle must verify and produce at least one analyzable
+decision. This verifies record -> cutoff replay -> legal action -> search -> report
+without committing a fabricated "real user" replay.
 
 The repository still does not contain a real human M-C player-view decision bundle.
 When one is available, it should become the first human golden fixture after removing
