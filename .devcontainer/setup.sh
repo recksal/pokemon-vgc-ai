@@ -14,7 +14,9 @@ if [ ! -d "$SHOWDOWN_REPO/.git" ]; then
 fi
 
 echo "==> Pinning Pokemon Showdown to $SHOWDOWN_SHA"
-git -C "$SHOWDOWN_REPO" fetch --depth=1 origin "$SHOWDOWN_SHA"
+if ! git -C "$SHOWDOWN_REPO" cat-file -e "$SHOWDOWN_SHA^{commit}" 2>/dev/null; then
+  git -C "$SHOWDOWN_REPO" fetch origin master
+fi
 git -C "$SHOWDOWN_REPO" checkout --detach "$SHOWDOWN_SHA"
 
 echo "==> Installing/building Pokemon Showdown"
