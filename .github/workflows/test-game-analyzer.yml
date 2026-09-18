@@ -8,7 +8,10 @@ on:
       - 'src/vgc/game_analyzer.py'
       - 'offline/analyze_game.py'
       - 'tests/test_game_analyzer.py'
+      - 'tests/test_human_capture.py'
       - 'tests/integration/test_local_battles.py'
+      - 'src/vgc/human_capture.py'
+      - 'offline/play_and_analyze.py'
       - 'src/vgc/battle_state_replay.py'
       - 'src/vgc/actions.py'
       - 'src/vgc/search.py'
@@ -20,7 +23,10 @@ on:
       - 'src/vgc/game_analyzer.py'
       - 'offline/analyze_game.py'
       - 'tests/test_game_analyzer.py'
+      - 'tests/test_human_capture.py'
       - 'tests/integration/test_local_battles.py'
+      - 'src/vgc/human_capture.py'
+      - 'offline/play_and_analyze.py'
       - 'src/vgc/battle_state_replay.py'
       - 'src/vgc/actions.py'
       - 'src/vgc/search.py'
@@ -56,13 +62,17 @@ jobs:
         run: |
           .venv/bin/python -m ruff check \
             src/vgc/game_analyzer.py \
+            src/vgc/human_capture.py \
             offline/analyze_game.py \
-            tests/test_game_analyzer.py
+            offline/play_and_analyze.py \
+            tests/test_game_analyzer.py \
+            tests/test_human_capture.py
 
       - name: Analyzer and replay contract tests
         run: |
           .venv/bin/python -m pytest \
             tests/test_game_analyzer.py \
+            tests/test_human_capture.py \
             tests/test_battle_state_replay.py
 
   integration:
@@ -103,4 +113,5 @@ jobs:
       - name: End-to-end analyzer replay contract
         run: |
           .venv/bin/python -m pytest -m integration \
-            tests/integration/test_local_battles.py::test_game_analyzer_consumes_real_mc_decision_bundle
+            tests/integration/test_local_battles.py::test_game_analyzer_consumes_real_mc_decision_bundle \
+            tests/integration/test_local_battles.py::test_human_capture_records_verifiable_analyzable_game
