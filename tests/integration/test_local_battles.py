@@ -29,6 +29,7 @@ from vgc.actions import (
 )
 from vgc.damage import to_id
 from vgc.game_analyzer import analyze_decision_bundle
+from vgc.human_capture import HumanCapturePlayer
 from vgc.agent import VgcPlayer
 from vgc.battle_state_replay import (
     DECISION_INPUT_FIELDS,
@@ -1177,6 +1178,71 @@ def test_decision_replay_rebuilds_with_open_team_sheets(local_server, dev_team) 
         assert any(message[1:2] == ["showteam"] for message in bundle["messages"])
         verification = asyncio.run(verify_decision_replay_bundle(bundle))
         assert verification.ready, verification.mismatches
+
+
+def test_human_capture_records_verifiable_analyzable_game(local_server, dev_team) -> None:
+    """A human-selected local game uses the exact real-game capture/analyze contract."""
+
+    move_prompts = 0
+    output: list[str] = []
+
+    def fake_input(prompt: str) -> str:
+        nonlocal move_prompts
+        if "slots" in prompt:
+            return "1234"
+        if "Choose action" in prompt:
+            move_prompts += 1
+            return "1" if move_prompts == 1 else "q"
+        raise AssertionError(f"unexpected prompt: {prompt}")
+
+    async def _run() -> tuple[dict[str, object], dict[str, object]]:
+        config = PolicyConfig(
+            format_id=FORMAT_ID,
+            accept_open_team_sheet=False,
+            use_heuristic_evaluator=True,
+            use_two_ply_search=True,
+        )
+        human = HumanCapturePlayer(
+            config=config,
+            team=dev_team,
+            battle_format=FORMAT_ID,
+            accept_open_team_sheet=False,
+            record_decision_replays=True,
+            server_configuration=LocalhostServerConfiguration,
+            input_func=fake_input,
+            output_func=output.append,
+        )
+        opponent = make_player(
+            "random",
+            dev_team,
+            FORMAT_ID,
+            accept_open_team_sheet=False,
+            server_configuration=LocalhostServerConfiguration,
+        )
+        try:
+            await asyncio.wait_for(human.battle_against(opponent, n_battles=1), timeout=45)
+        finally:
+            await human.ps_client.stop_listening()
+            await opponent.ps_client.stop_listening()
+        battle = next(iter(human.battles.values()))
+        bundle = human.decision_replay_bundle(battle)
+        assert bundle is not None
+        verification = await verify_decision_replay_bundle(bundle)
+        assert verification.ready, verification.mismatches
+        report = await analyze_decision_bundle(bundle, top_k=2)
+        return bundle, report
+
+    bundle, report = asyncio.run(_run())
+    assert move_prompts >= 1
+    assert any(decision.get("phase") == "move" for decision in bundle["decisions"])
+    assert report["schema"] == "vgc-game-analysis-v1"
+    assert report["decisions_analyzed"] >= 1
+    assert all(
+        finding["confidence"] != "unavailable"
+        for finding in report["findings"]
+    )
+    assert any(line.startswith("TEAM PREVIEW") for line in output)
+    assert any(line.startswith("TURN ") for line in output)
 
 
 def test_game_analyzer_consumes_real_mc_decision_bundle(local_server) -> None:
