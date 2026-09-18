@@ -28,6 +28,7 @@ from vgc.actions import (
     enumerate_joint_orders,
 )
 from vgc.damage import to_id
+from vgc.game_analyzer import analyze_decision_bundle
 from vgc.agent import VgcPlayer
 from vgc.battle_state_replay import (
     DECISION_INPUT_FIELDS,
@@ -1176,6 +1177,51 @@ def test_decision_replay_rebuilds_with_open_team_sheets(local_server, dev_team) 
         assert any(message[1:2] == ["showteam"] for message in bundle["messages"])
         verification = asyncio.run(verify_decision_replay_bundle(bundle))
         assert verification.ready, verification.mismatches
+
+
+def test_game_analyzer_consumes_real_mc_decision_bundle(local_server) -> None:
+    """Analyzer contract: a real local M-C player-view bundle round-trips end to end."""
+
+    ours, _theirs = asyncio.run(
+        record_scripted_bundles(
+            our_team=_packed_team("dev"),
+            their_team=_packed_team("frail_leads"),
+            our_scripts=(
+                ("eruption", "protect", "protect", "protect"),
+                ("protect-mega", "protect", "protect", "protect"),
+            ),
+            their_scripts=(
+                ("electricterrain", "protect", "protect", "protect"),
+                ("charge", "protect", "protect", "protect"),
+            ),
+            our_team_order="/team 3124",
+            their_team_order="/team 1234",
+            accept_ots=False,
+            our_forfeit_after_moves=4,
+            their_forfeit_after_moves=4,
+        )
+    )
+
+    report = asyncio.run(analyze_decision_bundle(ours, top_k=2))
+    expected = [
+        decision
+        for decision in ours["decisions"]
+        if decision.get("phase") == "move"
+        and isinstance(decision.get("chosen_order_wire"), str)
+        and str(decision["chosen_order_wire"]).startswith("/choose ")
+        and str(decision["chosen_order_wire"]).strip().lower() != "/choose default"
+    ]
+
+    assert report["schema"] == "vgc-game-analysis-v1"
+    assert report["format"] == FORMAT_ID
+    assert report["decisions_analyzed"] == len(expected)
+    assert report["decisions_analyzed"] >= 1
+    findings = report["findings"]
+    assert isinstance(findings, list) and findings
+    for finding in findings:
+        assert finding["chosen_rank"] is not None, finding
+        assert finding["confidence"] != "unavailable", finding
+        assert finding["best_order"], finding
 
 
 def test_ladder_artifact_pipeline_local_smoke(local_server, dev_team, tmp_path) -> None:
