@@ -36,13 +36,21 @@ search_joint_orders, matches the saved choice by its exact wire message, and rep
 - engineered search-score gap;
 - up to N alternatives;
 - worst modeled opponent response when available;
+- tactical evidence already present in the evaluator breakdown, including estimated
+  guaranteed/likely KOs, lethal-exposure penalties, and relevant Speed benchmarks;
 - a conservative evidence band: none, candidate, moderate, or high.
 
 Search score is not win probability. The evidence band measures disagreement with the
 current engineered evaluator/search. V1 therefore says "engine disagreement" or
 "likely tactical mistake," not "objective blunder."
 
+Opponent Stat Points/nature are often hidden in ordinary Bo1 play. A "guaranteed KO"
+therefore means guaranteed against the analyzer's current hidden-spread estimate, not
+against every legal spread. Reports label those facts model-based.
+
 Team preview and forced-switch grading are intentionally skipped in this first slice.
+Forfeits, missing choices, and Showdown default choices are also skipped rather than
+misgraded as unavailable legal moves.
 
 ## CLI
 
@@ -52,10 +60,23 @@ Team preview and forced-switch grading are intentionally skipped in this first s
 The first form prints a readable turn-by-turn report; --json emits
 vgc-game-analysis-v1 for later UI/report tooling.
 
+## Verification
+
+The integration suite now creates an authentic player-view bundle from a deterministic
+local Showdown M-C battle, runs that bundle through the analyzer, and requires every
+graded played action to match a reconstructed legal candidate. This verifies the
+record -> cutoff replay -> legal action -> search -> report path without committing a
+fabricated "real user" replay.
+
+The repository still does not contain a real human M-C player-view decision bundle.
+When one is available, it should become the first human golden fixture after removing
+account-identifying metadata if necessary.
+
 ## Next slices
 
-1. Golden end-to-end fixture from a real M-C decision bundle.
-2. Tactical evidence extractors for guaranteed KOs, survival, speed order, and redundant
-   Protects so reports explain why a line is preferred rather than only exposing score.
+1. Add redundant-Protect and missed-survival tactical explanations where the existing
+   evaluator evidence is strong enough to support them.
+2. Capture and retain one representative human M-C player-view bundle as a golden
+   fixture.
 3. Public/human replay ingestion with explicit known-vs-true-state handling.
 4. Only after those are trustworthy: calibrated multi-turn decision-loss estimates.
