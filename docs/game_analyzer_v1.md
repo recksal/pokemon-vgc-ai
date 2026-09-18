@@ -60,6 +60,43 @@ misgraded as unavailable legal moves.
 The first form prints a readable turn-by-turn report; --json emits
 vgc-game-analysis-v1 for later UI/report tooling.
 
+## Run from GitHub Codespaces
+
+This branch includes a devcontainer specifically for away-from-home testing. Creating a
+Codespace from `feature/game-analyzer-v1` automatically:
+
+- provides Python 3.12 and Node 22;
+- installs `uv` and the project's development dependencies;
+- clones Pokémon Showdown into `/workspaces/pokemon-showdown`;
+- checks out the pinned Champions revision `efe494857`;
+- builds Showdown;
+- sets `VGC_SHOWDOWN_REPO` so the analyzer no longer depends on the home macOS path.
+
+Before playing, create two Codespaces secrets named:
+
+- `VGC_SHOWDOWN_USERNAME`
+- `VGC_SHOWDOWN_PASSWORD`
+
+Do not commit either value to the repository.
+
+Once the Codespace finishes its automatic setup, run:
+
+    .venv/bin/python offline/check_remote_analyzer_ready.py
+
+Every line should report PASS. Then start the real-game test with:
+
+    .venv/bin/python offline/play_and_analyze.py --team teams/recksal_mc.packed.txt
+
+The terminal displays Team Preview and all legal joint actions as numbered choices. The
+human selects every action. After the game, the analyzer verifies the private decision
+bundle before writing the report under `runs/game-analyzer-real/`.
+
+The same environment-variable override also works on any other Linux/macOS machine:
+
+    export VGC_SHOWDOWN_REPO=/path/to/pokemon-showdown
+
+The historical home-machine default remains unchanged when that variable is absent.
+
 ## Real-game test path
 
 The branch is designed to reach a trustworthy first human test without grading a
