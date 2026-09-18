@@ -420,6 +420,23 @@ async def analyze_decision_bundle(
             )
             continue
 
+        chosen_wire_value = raw.get("chosen_order_wire")
+        chosen_wire = str(chosen_wire_value) if chosen_wire_value is not None else None
+        if (
+            chosen_wire is None
+            or not chosen_wire.startswith("/choose ")
+            or chosen_wire.strip().lower() == "/choose default"
+        ):
+            skipped.append(
+                {
+                    "decision_sequence": index,
+                    "turn": turn,
+                    "phase": phase,
+                    "reason": "V1 skips forfeits, defaults, and missing played choices",
+                }
+            )
+            continue
+
         battle = await replay_battle_at_cutoff(bundle, index)
         if not isinstance(battle, DoubleBattle):
             skipped.append(
@@ -461,11 +478,7 @@ async def analyze_decision_bundle(
                 chosen_order=(
                     str(raw["chosen_order"]) if raw.get("chosen_order") is not None else None
                 ),
-                chosen_wire=(
-                    str(raw["chosen_order_wire"])
-                    if raw.get("chosen_order_wire") is not None
-                    else None
-                ),
+                chosen_wire=chosen_wire,
                 candidates=candidates,
                 top_k=top_k,
             )
