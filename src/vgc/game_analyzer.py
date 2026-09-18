@@ -1,0 +1,329 @@
+"""V1 post-game decision analysis built on the existing Champions search engine.
+
+The analyzer consumes a vgc-decision-replay-v1 bundle, rebuilds the exact
+player-view state at each saved decision cutoff, and re-scores the legal actions with
+the same search stack used by the simulator/bot.
+
+Important: the numeric score is an ENGINE SCORE, not a win probability. V1 reports
+engine-preferred alternatives and confidence bands; it does not claim objective
+Stockfish-style blunders.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, fields
+
+from poke_env.battle.double_battle import DoubleBattle
+
+from vgc.actions import choice_wire_message, describe_order
+from vgc.battle_state_replay import DECISION_REPLAY_SCHEMA, replay_battle_at_cutoff
+from vgc.models import PolicyConfig
+from vgc.search import search_joint_orders
+
+
+@dataclass(frozen=True)
+class CandidateScore:
+    order: str
+    wire: str
+    score: float
+    searched: bool
+    worst_response: str | None = None
+    exchange_value: float | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class DecisionFinding:
+    decision_sequence: int
+    turn: int
+    phase: str
+    chosen_order: str | None
+    chosen_wire: str | None
+    chosen_rank: int | None
+    chosen_score: float | None
+    best_order: str | None
+    best_wire: str | None
+    best_score: float | None
+    score_gap: float | None
+    confidence: str
+    finding: str
+    alternatives: tuple[CandidateScore, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        payload = asdict(self)
+        payload["alternatives"] = [entry.as_dict() for entry in self.alternatives]
+        return payload
+
+
+def _config_from_bundle(bundle: dict[str, object]) -> PolicyConfig:
+    raw = bundle.get("policy_config")
+    if not isinstance(raw, dict):
+        return PolicyConfig()
+    allowed = {entry.name for entry in fields(PolicyConfig)}
+    values = {key: value for key, value in raw.items() if key in allowed}
+    return PolicyConfig(**values)
+
+
+def _confidence(*, rank: int, gap: float, searched: bool) -> str:
+    """Conservative disagreement band; never interpreted as win probability."""
+
+    if rank == 1 or gap <= 1e-9:
+        return "none"
+    if searched and rank >= 3 and gap >= 75.0:
+        return "high"
+    if searched and gap >= 30.0:
+        return "moderate"
+    return "candidate"
+
+
+def compare_candidates(
+    *,
+    decision_sequence: int,
+    turn: int,
+    phase: str,
+    chosen_order: str | None,
+    chosen_wire: str | None,
+    candidates: list[CandidateScore],
+    top_k: int = 3,
+) -> DecisionFinding:
+    """Compare a played wire action with a ranked candidate list."""
+
+    if not candidates:
+        return DecisionFinding(
+            decision_sequence=decision_sequence,
+            turn=turn,
+            phase=phase,
+            chosen_order=chosen_order,
+            chosen_wire=chosen_wire,
+            chosen_rank=None,
+            chosen_score=None,
+            best_order=None,
+            best_wire=None,
+            best_score=None,
+            score_gap=None,
+            confidence="unavailable",
+            finding="No analyzable candidates were produced for this decision.",
+            alternatives=(),
+        )
+
+    best = candidates[0]
+    chosen_index = next(
+        (index for index, entry in enumerate(candidates) if entry.wire == chosen_wire),
+        None,
+    )
+    if chosen_index is None:
+        return DecisionFinding(
+            decision_sequence=decision_sequence,
+            turn=turn,
+            phase=phase,
+            chosen_order=chosen_order,
+            chosen_wire=chosen_wire,
+            chosen_rank=None,
+            chosen_score=None,
+            best_order=best.order,
+            best_wire=best.wire,
+            best_score=best.score,
+            score_gap=None,
+            confidence="unavailable",
+            finding="The saved choice could not be matched to the rebuilt legal action set.",
+            alternatives=tuple(candidates[:top_k]),
+        )
+
+    chosen = candidates[chosen_index]
+    rank = chosen_index + 1
+    gap = max(0.0, best.score - chosen.score)
+    band = _confidence(rank=rank, gap=gap, searched=chosen.searched)
+    if rank == 1:
+        finding = "Played action matches the engine's top-ranked line."
+    elif band == "high":
+        finding = (
+            "Strong engine disagreement: inspect the preferred line as a likely "
+            "tactical mistake."
+        )
+    elif band == "moderate":
+        finding = (
+            "Meaningful engine disagreement: the preferred line deserves replay review."
+        )
+    else:
+        finding = (
+            "Alternative candidate found, but V1 evidence is not strong enough to call "
+            "this a mistake."
+        )
+
+    alternatives = tuple(
+        entry for entry in candidates if entry.wire != chosen_wire
+    )[:top_k]
+    return DecisionFinding(
+        decision_sequence=decision_sequence,
+        turn=turn,
+        phase=phase,
+        chosen_order=chosen_order,
+        chosen_wire=chosen_wire,
+        chosen_rank=rank,
+        chosen_score=chosen.score,
+        best_order=best.order,
+        best_wire=best.wire,
+        best_score=best.score,
+        score_gap=gap,
+        confidence=band,
+        finding=finding,
+        alternatives=alternatives,
+    )
+
+
+async def analyze_decision_bundle(
+    bundle: dict[str, object],
+    *,
+    top_k: int = 3,
+) -> dict[str, object]:
+    """Analyze every ordinary move decision in a saved player-view replay bundle."""
+
+    if bundle.get("schema") != DECISION_REPLAY_SCHEMA:
+        raise ValueError(f"expected {DECISION_REPLAY_SCHEMA!r}")
+
+    decisions = bundle.get("decisions")
+    if not isinstance(decisions, list):
+        raise ValueError("bundle is missing decisions")
+
+    config = _config_from_bundle(bundle)
+    findings: list[DecisionFinding] = []
+    skipped: list[dict[str, object]] = []
+
+    for index, raw in enumerate(decisions):
+        if not isinstance(raw, dict):
+            skipped.append({"decision_sequence": index, "reason": "malformed decision"})
+            continue
+        phase = str(raw.get("phase") or "")
+        turn = int(raw.get("turn") or 0)
+        if phase != "move":
+            skipped.append(
+                {
+                    "decision_sequence": index,
+                    "turn": turn,
+                    "phase": phase,
+                    "reason": "V1 scores ordinary move decisions only",
+                }
+            )
+            continue
+
+        battle = await replay_battle_at_cutoff(bundle, index)
+        if not isinstance(battle, DoubleBattle):
+            skipped.append(
+                {
+                    "decision_sequence": index,
+                    "turn": turn,
+                    "phase": phase,
+                    "reason": "reconstructed state is not a doubles battle",
+                }
+            )
+            continue
+
+        scored = search_joint_orders(battle, config)
+        candidates = [
+            CandidateScore(
+                order=describe_order(entry.order),
+                wire=choice_wire_message(entry.order),
+                score=float(entry.score),
+                searched=bool(entry.breakdown.get("searched", False)),
+                worst_response=(
+                    str(entry.breakdown["worst_response"])
+                    if entry.breakdown.get("worst_response") is not None
+                    else None
+                ),
+                exchange_value=(
+                    float(entry.breakdown["exchange_value"])
+                    if entry.breakdown.get("exchange_value") is not None
+                    else None
+                ),
+            )
+            for entry in scored
+        ]
+        findings.append(
+            compare_candidates(
+                decision_sequence=index,
+                turn=turn,
+                phase=phase,
+                chosen_order=(
+                    str(raw["chosen_order"]) if raw.get("chosen_order") is not None else None
+                ),
+                chosen_wire=(
+                    str(raw["chosen_order_wire"])
+                    if raw.get("chosen_order_wire") is not None
+                    else None
+                ),
+                candidates=candidates,
+                top_k=top_k,
+            )
+        )
+
+    meaningful = [
+        finding for finding in findings if finding.confidence in {"moderate", "high"}
+    ]
+    return {
+        "schema": "vgc-game-analysis-v1",
+        "battle_tag": bundle.get("battle_tag"),
+        "format": bundle.get("format"),
+        "player_side": bundle.get("player_side"),
+        "player_username": bundle.get("player_username"),
+        "score_semantics": (
+            "Engine score deltas from the existing engineered search; not win probability."
+        ),
+        "decisions_analyzed": len(findings),
+        "meaningful_findings": len(meaningful),
+        "findings": [finding.as_dict() for finding in findings],
+        "skipped": skipped,
+    }
+
+
+def render_text_report(report: dict[str, object]) -> str:
+    """Render a compact, human-readable V1 report."""
+
+    lines = [
+        "POKEMON CHAMPIONS GAME ANALYSIS — V1",
+        f"Battle: {report.get('battle_tag') or 'unknown'}",
+        f"Format: {report.get('format') or 'unknown'}",
+        (
+            f"Analyzed decisions: {report.get('decisions_analyzed', 0)} | "
+            f"Meaningful findings: {report.get('meaningful_findings', 0)}"
+        ),
+        "",
+        "Note: score gaps are engineered search-score deltas, not win probability.",
+    ]
+    for finding in report.get("findings") or []:
+        if not isinstance(finding, dict):
+            continue
+        lines.extend(
+            [
+                "",
+                f"TURN {finding.get('turn')} — {str(finding.get('confidence')).upper()}",
+                (
+                    f"Played: "
+                    f"{finding.get('chosen_order') or finding.get('chosen_wire') or 'unknown'}"
+                ),
+                str(finding.get("finding") or ""),
+            ]
+        )
+        if finding.get("best_order") is not None:
+            lines.append(f"Engine preference: {finding['best_order']}")
+        if finding.get("chosen_rank") is not None:
+            lines.append(
+                f"Rank: {finding['chosen_rank']} | score gap: "
+                f"{float(finding.get('score_gap') or 0.0):.1f}"
+            )
+        alternatives = finding.get("alternatives") or []
+        if alternatives:
+            lines.append("Top alternatives:")
+            for alt in alternatives:
+                if isinstance(alt, dict):
+                    suffix = (
+                        f" | worst response: {alt['worst_response']}"
+                        if alt.get("worst_response")
+                        else ""
+                    )
+                    lines.append(
+                        f"  - {alt.get('order')} "
+                        f"({float(alt.get('score') or 0.0):.1f}){suffix}"
+                    )
+    return "\n".join(lines)
