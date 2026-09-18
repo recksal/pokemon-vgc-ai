@@ -1,6 +1,19 @@
 name: Test game analyzer
 
 on:
+  push:
+    branches:
+      - feature/game-analyzer-v1
+    paths:
+      - 'src/vgc/game_analyzer.py'
+      - 'offline/analyze_game.py'
+      - 'tests/test_game_analyzer.py'
+      - 'src/vgc/battle_state_replay.py'
+      - 'src/vgc/actions.py'
+      - 'src/vgc/search.py'
+      - 'src/vgc/evaluator.py'
+      - 'docs/game_analyzer_v1.md'
+      - '.github/workflows/test-game-analyzer.yml'
   pull_request:
     paths:
       - 'src/vgc/game_analyzer.py'
