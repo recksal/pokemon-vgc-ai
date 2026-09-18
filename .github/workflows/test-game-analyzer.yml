@@ -12,6 +12,9 @@ on:
       - 'tests/integration/test_local_battles.py'
       - 'src/vgc/human_capture.py'
       - 'offline/play_and_analyze.py'
+      - 'offline/check_remote_analyzer_ready.py'
+      - 'src/vgc/config.py'
+      - '.devcontainer/**'
       - 'src/vgc/battle_state_replay.py'
       - 'src/vgc/actions.py'
       - 'src/vgc/search.py'
@@ -27,6 +30,9 @@ on:
       - 'tests/integration/test_local_battles.py'
       - 'src/vgc/human_capture.py'
       - 'offline/play_and_analyze.py'
+      - 'offline/check_remote_analyzer_ready.py'
+      - 'src/vgc/config.py'
+      - '.devcontainer/**'
       - 'src/vgc/battle_state_replay.py'
       - 'src/vgc/actions.py'
       - 'src/vgc/search.py'
@@ -65,8 +71,22 @@ jobs:
             src/vgc/human_capture.py \
             offline/analyze_game.py \
             offline/play_and_analyze.py \
+            offline/check_remote_analyzer_ready.py \
+            src/vgc/config.py \
             tests/test_game_analyzer.py \
             tests/test_human_capture.py
+
+      - name: Validate Codespaces files
+        run: |
+          python -m json.tool .devcontainer/devcontainer.json >/dev/null
+          bash -n .devcontainer/setup.sh
+
+      - name: Portable Showdown path contract
+        env:
+          VGC_SHOWDOWN_REPO: /tmp/vgc-showdown-portability-test
+        run: |
+          value="$(.venv/bin/python -c 'from vgc.config import SHOWDOWN_REPO; print(SHOWDOWN_REPO)')"
+          test "$value" = "/tmp/vgc-showdown-portability-test"
 
       - name: Analyzer and replay contract tests
         run: |
@@ -78,6 +98,8 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      VGC_SHOWDOWN_REPO: ${{ runner.temp }}/pokemon-showdown
 
     steps:
       - name: Check out repository
@@ -93,22 +115,8 @@ jobs:
         with:
           node-version: '22.18.0'
 
-      - name: Install uv
-        run: python -m pip install uv
-
-      - name: Install development dependencies
-        run: uv sync --extra dev
-
-      - name: Install pinned Pokémon Showdown
-        run: |
-          sudo mkdir -p /Users/edmundyu/code/projects
-          sudo chown -R "$USER":"$USER" /Users/edmundyu
-          git clone --filter=blob:none https://github.com/smogon/pokemon-showdown.git \
-            /Users/edmundyu/code/projects/pokemon-showdown
-          cd /Users/edmundyu/code/projects/pokemon-showdown
-          git checkout efe494857
-          npm ci
-          npm run build
+      - name: Run Codespaces bootstrap
+        run: bash .devcontainer/setup.sh
 
       - name: End-to-end analyzer replay contract
         run: |
