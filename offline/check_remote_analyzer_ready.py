@@ -37,11 +37,20 @@ def main() -> int:
             sys.executable,
         )
     )
+    node_path = shutil.which("node")
+    node_version = None
+    if node_path:
+        try:
+            node_version = subprocess.check_output(
+                [node_path, "--version"], text=True
+            ).strip()
+        except (OSError, subprocess.CalledProcessError):
+            node_version = None
     checks.append(
         (
             "Node 22",
-            bool(shutil.which("node")),
-            shutil.which("node") or "node not found",
+            bool(node_version and node_version.lstrip("v").startswith("22.")),
+            node_version or "node not found",
         )
     )
     checks.append(
