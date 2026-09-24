@@ -1,0 +1,38 @@
+FROM node:22-bookworm AS node-runtime
+
+FROM python:3.12-bookworm
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV VGC_SHOWDOWN_REPO=/opt/pokemon-showdown \
+    PORT=8080 \
+    PYTHONUNBUFFERED=1 \
+    UV_NO_CACHE=1
+ARG SHOWDOWN_COMMIT=efe494857
+
+WORKDIR /app
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+RUN python -m pip install --no-cache-dir uv \
+    && uv sync --no-dev
+
+RUN git clone --filter=blob:none https://github.com/smogon/pokemon-showdown.git "$VGC_SHOWDOWN_REPO" \
+    && git -C "$VGC_SHOWDOWN_REPO" fetch origin "$SHOWDOWN_COMMIT" \
+    && git -C "$VGC_SHOWDOWN_REPO" checkout --detach "$SHOWDOWN_COMMIT" \
+    && cd "$VGC_SHOWDOWN_REPO" \
+    && npm ci \
+    && npm run build
+
+COPY offline ./offline
+RUN useradd --create-home --uid 10001 analyzer \
+    && chown -R analyzer:analyzer /app
+USER analyzer
+
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+CMD [".venv/bin/python", "offline/analyzer_service.py"]
