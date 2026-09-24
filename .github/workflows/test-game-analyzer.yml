@@ -7,6 +7,10 @@ on:
     paths:
       - 'src/vgc/game_analyzer.py'
       - 'offline/analyze_game.py'
+      - 'offline/analyzer_service.py'
+      - 'tests/test_analyzer_service.py'
+      - 'Dockerfile.analyzer'
+      - '.dockerignore'
       - 'tests/test_game_analyzer.py'
       - 'tests/test_human_capture.py'
       - 'tests/integration/test_local_battles.py'
@@ -25,6 +29,10 @@ on:
     paths:
       - 'src/vgc/game_analyzer.py'
       - 'offline/analyze_game.py'
+      - 'offline/analyzer_service.py'
+      - 'tests/test_analyzer_service.py'
+      - 'Dockerfile.analyzer'
+      - '.dockerignore'
       - 'tests/test_game_analyzer.py'
       - 'tests/test_human_capture.py'
       - 'tests/integration/test_local_battles.py'
@@ -70,11 +78,13 @@ jobs:
             src/vgc/game_analyzer.py \
             src/vgc/human_capture.py \
             offline/analyze_game.py \
+            offline/analyzer_service.py \
             offline/play_and_analyze.py \
             offline/check_remote_analyzer_ready.py \
             src/vgc/config.py \
             tests/test_game_analyzer.py \
-            tests/test_human_capture.py
+            tests/test_human_capture.py \
+            tests/test_analyzer_service.py
 
       - name: Validate Codespaces files
         run: |
@@ -93,6 +103,7 @@ jobs:
           .venv/bin/python -m pytest \
             tests/test_game_analyzer.py \
             tests/test_human_capture.py \
+            tests/test_analyzer_service.py \
             tests/test_battle_state_replay.py
 
   integration:
