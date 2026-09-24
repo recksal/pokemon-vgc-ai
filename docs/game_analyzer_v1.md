@@ -145,3 +145,39 @@ account-identifying metadata if necessary.
    fixture.
 3. Public/human replay ingestion with explicit known-vs-true-state handling.
 4. Only after those are trustworthy: calibrated multi-turn decision-loss estimates.
+
+
+## Website analysis service
+
+The branch includes an optional HTTP boundary for Champions Lab and other trusted
+clients. It accepts the same private player-view bundle used by the CLI and returns the
+existing `vgc-game-analysis-v1` report without changing analyzer semantics.
+
+Run it locally after the normal environment setup:
+
+    ANALYZER_API_TOKEN=replace-me \
+      .venv/bin/python offline/analyzer_service.py
+
+Endpoints:
+
+- `GET /health` reports input/output schemas without reading battle data.
+- `POST /analyze` accepts either a raw `vgc-decision-replay-v1` object or
+  `{"bundle": <bundle>, "top_k": 3}`.
+- Responses use `{"analysis": <vgc-game-analysis-v1>}`.
+- When `ANALYZER_API_TOKEN` is set, requests require
+  `Authorization: Bearer <token>`.
+
+Replay bodies are limited to 8 MiB, responses disable caching, and the service never
+logs replay payloads. Showdown ladder credentials are neither needed nor accepted.
+
+Build the pinned production container with:
+
+    docker build -f Dockerfile.analyzer -t pokemon-vgc-analyzer .
+    docker run --rm -p 8080:8080 \
+      -e ANALYZER_API_TOKEN=replace-me \
+      pokemon-vgc-analyzer
+
+The image installs Python 3.12 and Node 22, checks out the pinned Champions Showdown
+revision `efe494857`, and starts the analyzer on `PORT` (default 8080). Deploy it
+behind HTTPS and configure Champions Lab with the service URL and the same bearer
+token. Do not expose an unauthenticated service publicly.
