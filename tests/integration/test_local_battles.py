@@ -21,6 +21,7 @@ from poke_env.battle.double_battle import DoubleBattle
 from poke_env.battle.move import Move
 from poke_env.battle.pokemon import Pokemon
 from poke_env.player.battle_order import ForfeitBattleOrder, SingleBattleOrder
+from poke_env.ps_client.server_configuration import LocalhostServerConfiguration
 
 from vgc.actions import (
     choice_wire_message,
@@ -28,6 +29,8 @@ from vgc.actions import (
     enumerate_joint_orders,
 )
 from vgc.damage import to_id
+from vgc.game_analyzer import analyze_decision_bundle
+from vgc.human_capture import HumanCapturePlayer
 from vgc.agent import VgcPlayer
 from vgc.battle_state_replay import (
     DECISION_INPUT_FIELDS,
@@ -1176,6 +1179,116 @@ def test_decision_replay_rebuilds_with_open_team_sheets(local_server, dev_team) 
         assert any(message[1:2] == ["showteam"] for message in bundle["messages"])
         verification = asyncio.run(verify_decision_replay_bundle(bundle))
         assert verification.ready, verification.mismatches
+
+
+def test_human_capture_records_verifiable_analyzable_game(local_server, dev_team) -> None:
+    """A human-selected local game uses the exact real-game capture/analyze contract."""
+
+    move_prompts = 0
+    output: list[str] = []
+
+    def fake_input(prompt: str) -> str:
+        nonlocal move_prompts
+        if "slots" in prompt:
+            return "1234"
+        if "Choose action" in prompt:
+            move_prompts += 1
+            return "1" if move_prompts == 1 else "q"
+        raise AssertionError(f"unexpected prompt: {prompt}")
+
+    async def _run() -> tuple[dict[str, object], dict[str, object]]:
+        config = PolicyConfig(
+            format_id=FORMAT_ID,
+            accept_open_team_sheet=False,
+            use_heuristic_evaluator=True,
+            use_two_ply_search=True,
+        )
+        human = HumanCapturePlayer(
+            config=config,
+            team=dev_team,
+            battle_format=FORMAT_ID,
+            accept_open_team_sheet=False,
+            record_decision_replays=True,
+            server_configuration=LocalhostServerConfiguration,
+            input_func=fake_input,
+            output_func=output.append,
+        )
+        opponent = make_player(
+            "random",
+            dev_team,
+            FORMAT_ID,
+            accept_open_team_sheet=False,
+            server_configuration=LocalhostServerConfiguration,
+        )
+        try:
+            await asyncio.wait_for(human.battle_against(opponent, n_battles=1), timeout=45)
+        finally:
+            await human.ps_client.stop_listening()
+            await opponent.ps_client.stop_listening()
+        battle = next(iter(human.battles.values()))
+        bundle = human.decision_replay_bundle(battle)
+        assert bundle is not None
+        verification = await verify_decision_replay_bundle(bundle)
+        assert verification.ready, verification.mismatches
+        report = await analyze_decision_bundle(bundle, top_k=2)
+        return bundle, report
+
+    bundle, report = asyncio.run(_run())
+    assert move_prompts >= 1
+    assert any(decision.get("phase") == "move" for decision in bundle["decisions"])
+    assert report["schema"] == "vgc-game-analysis-v1"
+    assert report["decisions_analyzed"] >= 1
+    assert all(
+        finding["confidence"] != "unavailable"
+        for finding in report["findings"]
+    )
+    assert any(line.startswith("TEAM PREVIEW") for line in output)
+    assert any(line.startswith("TURN ") for line in output)
+
+
+def test_game_analyzer_consumes_real_mc_decision_bundle(local_server) -> None:
+    """Analyzer contract: a real local M-C player-view bundle round-trips end to end."""
+
+    ours, _theirs = asyncio.run(
+        record_scripted_bundles(
+            our_team=_packed_team("dev"),
+            their_team=_packed_team("frail_leads"),
+            our_scripts=(
+                ("eruption", "protect", "protect", "protect"),
+                ("protect-mega", "protect", "protect", "protect"),
+            ),
+            their_scripts=(
+                ("electricterrain", "protect", "protect", "protect"),
+                ("charge", "protect", "protect", "protect"),
+            ),
+            our_team_order="/team 3124",
+            their_team_order="/team 1234",
+            accept_ots=False,
+            our_forfeit_after_moves=4,
+            their_forfeit_after_moves=4,
+        )
+    )
+
+    report = asyncio.run(analyze_decision_bundle(ours, top_k=2))
+    expected = [
+        decision
+        for decision in ours["decisions"]
+        if decision.get("phase") == "move"
+        and isinstance(decision.get("chosen_order_wire"), str)
+        and str(decision["chosen_order_wire"]).startswith("/choose ")
+        and str(decision["chosen_order_wire"]).strip().lower() != "/choose default"
+    ]
+
+    assert report["schema"] == "vgc-game-analysis-v1"
+    assert report["format"] == FORMAT_ID
+    assert report["decisions_analyzed"] == len(expected)
+    assert report["decisions_analyzed"] >= 1
+    findings = report["findings"]
+    assert isinstance(findings, list) and findings
+    for finding in findings:
+        assert finding["chosen_rank"] is not None, finding
+        assert finding["confidence"] != "unavailable", finding
+        assert finding["best_order"], finding
 
 
 def test_ladder_artifact_pipeline_local_smoke(local_server, dev_team, tmp_path) -> None:

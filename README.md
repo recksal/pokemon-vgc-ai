@@ -50,6 +50,24 @@ checkpoint, and current release approval; a saved file is not approval. See
 [`docs/full_learning_pipeline.md`](docs/full_learning_pipeline.md) for the commands,
 data boundaries, measured smoke results, and promotion rules.
 
+## Post-game analyzer in Codespaces
+
+The `feature/game-analyzer-v1` branch can be run away from the home development
+machine through GitHub Codespaces. Its devcontainer installs Python 3.12, Node 22,
+project dependencies, and the pinned Champions Showdown checkout automatically.
+
+Create Codespaces secrets `VGC_SHOWDOWN_USERNAME` and `VGC_SHOWDOWN_PASSWORD`, open
+a Codespace from that branch, then run:
+
+```bash
+.venv/bin/python offline/check_remote_analyzer_ready.py
+.venv/bin/python offline/play_and_analyze.py --team teams/recksal_mc.packed.txt
+```
+
+The second command lets the human choose every action and writes a verified post-game
+report under `runs/game-analyzer-real/`. See
+[`docs/game_analyzer_v1.md`](docs/game_analyzer_v1.md) for the input/evidence contract.
+
 ## Local verification
 
 ```bash
